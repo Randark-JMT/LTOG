@@ -1,0 +1,943 @@
+diff --git a/ltfs/configure.ac b/ltfs/configure.ac
+index cd3fc02..4dafc27 100644
+--- a/ltfs/configure.ac
++++ b/ltfs/configure.ac
+@@ -49,6 +49,7 @@ AC_PROG_CC
+ AC_USE_SYSTEM_EXTENSIONS
+ AC_PROG_CC_C99
+ AC_PROG_LIBTOOL
++LT_PROG_RC
+ 
+ dnl
+ dnl Check for debug
+@@ -208,7 +209,7 @@ then
+ 	OPT_FLAGS="-O2 -g -fno-strict-aliasing"
+ else
+ 	OPT_FLAGS="-O0 -ggdb"
+-	AM_CFLAGS="${AM_CFLAGS} -fkeep-inline-functions -rdynamic"
++	AM_CFLAGS="${AM_CFLAGS} -fkeep-inline-functions"
+ 	if test "x$use_debug" = "xyes"
+ 	then
+ 		AM_CPPFLAGS="${AM_CPPFLAGS} -DDEBUG -DTRACE"
+@@ -285,11 +286,11 @@ AC_CONFIG_FILES([
+     messages/Makefile
+     conf/Makefile
+     init.d/Makefile
+-    src/Makefile
+     src/libltfs/Makefile
+-    src/tape_drivers/linux/ltotape/Makefile
++    src/tape_drivers/windows/ltotape/Makefile
+     src/iosched/Makefile
+     src/kmi/Makefile
+     src/utils/Makefile
++    src/Makefile
+ ])
+ AC_OUTPUT
+diff --git a/ltfs/messages/Makefile.am b/ltfs/messages/Makefile.am
+index 18f031d..02a44e3 100755
+--- a/ltfs/messages/Makefile.am
++++ b/ltfs/messages/Makefile.am
+@@ -51,6 +51,13 @@
+ ##
+ ######################################################################################
+ 
++##
++## OSR/HP_mingw_BUILD
++##
++## Object file name must be changed from libltfs_dat to bin_libltfs_dat. This is 
++## part of changing the package name from libltfs to bin_libltfs to avoid collision 
++## with libltfs.dll, which is the name of the LTFS library code
++##
+ RESOURCES = \
+ 	bin_mkltfs_dat.o \
+ 	bin_ltfsck_dat.o \
+@@ -60,7 +67,7 @@ RESOURCES = \
+ 	driver_ltotape_dat.o \
+ 	iosched_fcfs_dat.o \
+ 	iosched_unified_dat.o \
+-	libltfs_dat.o \
++	bin_libltfs_dat.o \
+ 	internal_error_dat.o
+ 
+ .PHONY: all $(RESOURCES) clean-local
+diff --git a/ltfs/messages/make_message_src.sh b/ltfs/messages/make_message_src.sh
+index c8e74ce..7b6e344 100755
+--- a/ltfs/messages/make_message_src.sh
++++ b/ltfs/messages/make_message_src.sh
+@@ -34,27 +34,35 @@ make_obj() {
+ 	${GENRB} -d work -q *.txt
+ 	cd work
+ 	ls *.res >packagelist.txt
+-	${PKGDATA} -p ${BASENAME} -m static -q packagelist.txt >/dev/null
++
++	# Modern ICU pkgdata requires an options file (-O) for static/dll modes
++	PKGDATA_INC=${PKGDATA_INC:-/mingw64/lib/icu/current/pkgdata.inc}
++	if [ -f "$PKGDATA_INC" ]; then
++		PKGDATA_OPTS="-O $PKGDATA_INC"
++	else
++		PKGDATA_OPTS=
++	fi
+ 
+ 	case $KERNEL_NAME in
+-		MINGW32_NT*)
+-			# 
+-			# HPE_mingw_BUILD
++		MINGW*_NT*|MSYS_NT*)
++			#
++			# HP_mingw_BUILD
+ 			#
+-			# We use dynamic libraries for the package data, so use the 
++			# We use dynamic libraries for the package data, so use the
+ 			# -m dll switch
+ 			#
+-			${PKGDATA} -p ${BASENAME} -m dll -q packagelist.txt >/dev/null
++			${PKGDATA} -p ${BASENAME} -m dll -q ${PKGDATA_OPTS} packagelist.txt >/dev/null
+ 			
+-			# Copy the resulting DLL as both a link library
+-			# (lib*.a) and the DLL with the package data
+-			# (*.dll). Libtool will happily use the copy of 
+-			# the DLL to link
++			# Modern ICU pkgdata emits a lib-prefixed DLL plus a real
++			# import library. Keep the DLL name pkgdata embedded in the
++			# import lib (lib${BASENAME}.dll) so the loader finds it.
+ 			#
+-			cp ${BASENAME}.dll ../../lib${BASENAME}.a
+-			cp ${BASENAME}.dll ../../${BASENAME}.dll
++			cp lib${BASENAME}.dll.a ../../lib${BASENAME}.a
++			cp lib${BASENAME}.dll ../../lib${BASENAME}.dll
++			cp ${BASENAME}_dat.o ../../${BASENAME}_dat.o
+ 			;;
+ 		*)
++			${PKGDATA} -p ${BASENAME} -m static -q ${PKGDATA_OPTS} packagelist.txt >/dev/null
+ 			mv ${BASENAME}_dat.o ../../
+ 			;;
+ 	esac
+diff --git a/ltfs/src/Makefile.am b/ltfs/src/Makefile.am
+index 20d48d3..e1a1e6e 100755
+--- a/ltfs/src/Makefile.am
++++ b/ltfs/src/Makefile.am
+@@ -37,16 +37,30 @@
+ #   09/23/10 Rename hptape to more generic ltotape
+ #
+ #
++###############################################################################
++#
++#  Copyright (C) 2012 OSR Open Systems Resources, Inc.
++#
++###############################################################################
+ 
+ bin_PROGRAMS = ltfs
+ 
+-ltfs_SOURCES = main.c ltfs_fuse.c
+-ltfs_DEPENDENCIES = libltfs/libltfs.la ../messages/bin_ltfs_dat.o
+-ltfs_CPPFLAGS = @AM_CPPFLAGS@ -I ../ltfs-sde/src
+-ltfs_LDADD = libltfs/libltfs.la ../messages/bin_ltfs_dat.o
++#
++# RC file linked to provides message data for the Event Log
++#
++ltfs_SOURCES = main.c ltfs_fuse.c ltfs_msgs.rc
++ltfs_DEPENDENCIES = ../src/libltfs/libltfs.la ../messages/libbin_ltfs.a
++ltfs_LDADD = ../src/libltfs/libltfs.la -L../messages -lbin_ltfs -lbin_libltfs
++
++#
++# Provide support for building the RC file with the Resource Compiler (RC/windres)
++#
++.rc.o: 
++	$(RC) -o $@ $<
++	
++# 
++# Platform driver is the Windows driver
++#
++platform_drivers = tape_drivers/windows/ltotape
+ 
+-# platform_drivers = tape_drivers/linux/ibmtape
+-# generic_drivers = tape_drivers/generic/file tape_drivers/generic/itdtimg
+-# SUBDIRS = $(generic_drivers) $(platform_drivers) iosched kmi libltfs utils
+-platform_drivers = tape_drivers/linux/ltotape
+-SUBDIRS = $(platform_drivers) iosched kmi libltfs utils
++SUBDIRS = libltfs kmi . iosched utils $(platform_drivers) 
+diff --git a/ltfs/src/iosched/Makefile.am b/ltfs/src/iosched/Makefile.am
+index 341f257..c6960a2 100755
+--- a/ltfs/src/iosched/Makefile.am
++++ b/ltfs/src/iosched/Makefile.am
+@@ -31,6 +31,11 @@
+ #
+ #  ZZ_Copyright_END
+ #
++###############################################################################
++#
++#  Copyright (C) 2012 OSR Open Systems Resources, Inc.
++#
++###############################################################################
+ 
+ lib_LTLIBRARIES = libiosched-fcfs.la libiosched-unified.la
+ libdir = @libdir@/ltfs
+@@ -38,15 +43,28 @@ libdir = @libdir@/ltfs
+ AM_LIBTOOLFLAGS = --tag=disable-static
+ 
+ libiosched_fcfs_la_SOURCES = fcfs.c
+-libiosched_fcfs_la_LDFLAGS = -avoid-version -module @AM_LDFLAGS@
+-libiosched_fcfs_la_DEPENDENCIES = ../../messages/iosched_fcfs_dat.o
+-libiosched_fcfs_la_LIBADD = ../../messages/iosched_fcfs_dat.o
+-libiosched_fcfs_la_CPPFLAGS = @AM_CPPFLAGS@ -I ..
++#
++# OSR/HP_mingw_BUILD
++# 
++# In our MinGW environment, we dynamically link to the package 
++# data. 
++#  
++libiosched_fcfs_la_LDFLAGS = -avoid-version -no-undefined @AM_LDFLAGS@
++libiosched_fcfs_la_DEPENDENCIES = ../../messages/libiosched_fcfs.a
++libiosched_fcfs_la_LIBADD = -L../../messages -liosched_fcfs  ../libltfs/libltfs.la
++libiosched_fcfs_la_CPPFLAGS = @AM_CPPFLAGS@ -I../src
+ 
+ libiosched_unified_la_SOURCES = unified.c cache_manager.c
+-libiosched_unified_la_LDFLAGS = -avoid-version -module @AM_LDFLAGS@
+-libiosched_unified_la_DEPENDENCIES = ../../messages/iosched_unified_dat.o
+-libiosched_unified_la_LIBADD = ../../messages/iosched_unified_dat.o
++
++#
++# OSR/HP_mingw_BUILD
++# 
++# In our MinGW environment, we dynamically link to the package 
++# data. 
++#  
++libiosched_unified_la_LDFLAGS = -avoid-version -no-undefined @AM_LDFLAGS@
++libiosched_unified_la_DEPENDENCIES = ../../messages/libiosched_unified.a
++libiosched_unified_la_LIBADD = -L../../messages -liosched_unified  ../libltfs/libltfs.la
+ libiosched_unified_la_CPPFLAGS = @AM_CPPFLAGS@ -I ..
+ 
+ install-exec-hook:
+diff --git a/ltfs/src/kmi/Makefile.am b/ltfs/src/kmi/Makefile.am
+index feaaa78..db16b0c 100644
+--- a/ltfs/src/kmi/Makefile.am
++++ b/ltfs/src/kmi/Makefile.am
+@@ -31,6 +31,11 @@
+ #
+ #  ZZ_Copyright_END
+ #
++###############################################################################
++#
++#  Copyright (C) 2012 OSR Open Systems Resources, Inc.
++#
++###############################################################################
+ 
+ lib_LTLIBRARIES = libkmi-simple.la libkmi-flatfile.la
+ libdir = @libdir@/ltfs
+@@ -38,15 +43,28 @@ libdir = @libdir@/ltfs
+ AM_LIBTOOLFLAGS = --tag=disable-static
+ 
+ libkmi_simple_la_SOURCES = simple.c key_format_ltfs.c
+-libkmi_simple_la_LDFLAGS = -avoid-version -module @AM_LDFLAGS@
+-libkmi_simple_la_DEPENDENCIES = ../../messages/kmi_simple_dat.o
+-libkmi_simple_la_LIBADD = ../../messages/kmi_simple_dat.o
++#
++# OSR/HP_mingw_BUILD
++# 
++# In our MinGW environment, we dynamically link to the package 
++# data. 
++#  
++libkmi_simple_la_LDFLAGS = -avoid-version -no-undefined @AM_LDFLAGS@
++libkmi_simple_la_DEPENDENCIES = ../../messages/libkmi_simple.a
++libkmi_simple_la_LIBADD = -L../../messages -lkmi_simple  ../libltfs/libltfs.la
+ libkmi_simple_la_CPPFLAGS = @AM_CPPFLAGS@ -I ..
+ 
+ libkmi_flatfile_la_SOURCES = flatfile.c key_format_ltfs.c
+-libkmi_flatfile_la_LDFLAGS = -avoid-version -module @AM_LDFLAGS@
+-libkmi_flatfile_la_DEPENDENCIES = ../../messages/kmi_flatfile_dat.o
+-libkmi_flatfile_la_LIBADD = ../../messages/kmi_flatfile_dat.o
++
++#
++# OSR/HP_mingw_BUILD
++# 
++# In our MinGW environment, we dynamically link to the package 
++# data. 
++#  
++libkmi_flatfile_la_LDFLAGS = -avoid-version -no-undefined @AM_LDFLAGS@
++libkmi_flatfile_la_DEPENDENCIES = ../../messages/libkmi_flatfile.a
++libkmi_flatfile_la_LIBADD = -L../../messages -lkmi_flatfile  ../libltfs/libltfs.la
+ libkmi_flatfile_la_CPPFLAGS = @AM_CPPFLAGS@ -I ..
+ 
+ install-exec-hook:
+diff --git a/ltfs/src/libltfs/Makefile.am b/ltfs/src/libltfs/Makefile.am
+index 1044a6b..9d57f8c 100644
+--- a/ltfs/src/libltfs/Makefile.am
++++ b/ltfs/src/libltfs/Makefile.am
+@@ -31,12 +31,29 @@
+ #
+ #  ZZ_Copyright_END
+ #
++#
++#   (C) Copyright 2015 Hewlett Packard Enterprise Development LP.
++#   05/28/10 Add hptape backend to list of platform drivers
++#   09/23/10 Rename hptape to more generic ltotape
++#
++#
++###############################################################################
++#
++#  Copyright (C) 2012 OSR Open Systems Resources, Inc.
++#
++###############################################################################
+ 
+ lib_LTLIBRARIES = libltfs.la
+ 
+ noinst_HEADERS =
+ nobase_pkginclude_HEADERS = ltfs.h tape_ops.h ltfs_types.h ltfslogging.h ltfstrace.h ltfs_thread.h ltfs_locking.h queue.h plugin.h config_file.h ltfs_error.h
+ 
++#
++# OSR/HP_mingw_BUILD
++# 
++# We include the Windows architecture files to go into this library instead of
++# creating yet another library
++#
+ libltfs_la_SOURCES = \
+ 	ltfs.c \
+ 	ltfs_internal.c \
+@@ -65,20 +82,19 @@ libltfs_la_SOURCES = \
+ 	arch/uuid_internal.c \
+ 	arch/filename_handling.c \
+ 	arch/time_internal.c \
++	arch/win/win_util.c \
++	arch/win/winlog.c \
+ 	arch/arch_info.c \
+ 	arch/errormap.c
+-
+-libltfs_la_DEPENDENCIES = ../../messages/libltfs_dat.o ../../messages/internal_error_dat.o
+-libltfs_la_LIBADD = ../../messages/libltfs_dat.o ../../messages/internal_error_dat.o
++	
++#
++# Note the change in the libltfs package data binary (bin_libltfs).
++# 
++libltfs_la_DEPENDENCIES = ../../messages/libbin_libltfs.a ../../messages/libinternal_error.a
++#
++# Package data must be linked as a library (-lbin_libltfs)
++#
++libltfs_la_LIBADD = -L../../messages -lbin_libltfs -linternal_error -lole32 -lpthread -lxml2 -lrpcrt4 -loleaut32 -licuuc -lws2_32
+ libltfs_la_CPPFLAGS = @AM_CPPFLAGS@ -I ..
+-libltfs_la_LDFLAGS = @AM_LDFLAGS@
++libltfs_la_LDFLAGS = @AM_LDFLAGS@ -avoid-version -no-undefined
+ 
+-install-data-local:
+-	if [ ! -d "$(prefix)/share/snmp" ]; then \
+-		mkdir -p "$(prefix)/share/snmp"; \
+-		cp LtfsSnmpTrapDef.txt LTFS-MIB.txt "$(prefix)/share/snmp/"; \
+-	elif [ ! -f "$(prefix)/share/snmp/LtfsSnmpTrapDef.txt" ]; then \
+-		cp LtfsSnmpTrapDef.txt "$(prefix)/share/snmp/LtfsSnmpTrapDef.txt"; \
+-	elif [ ! -f "$(prefix)/share/snmp/LTFS-MIB.txt" ]; then \
+-		cp LTFS-MIB.txt "$(prefix)/share/snmp/LTFS-MIB.txt"; \
+-	fi
+diff --git a/ltfs/src/libltfs/arch/win/win_util.h b/ltfs/src/libltfs/arch/win/win_util.h
+index 6716493..a82be00 100644
+--- a/ltfs/src/libltfs/arch/win/win_util.h
++++ b/ltfs/src/libltfs/arch/win/win_util.h
+@@ -66,6 +66,12 @@ extern "C" {
+ #include <sys/stat.h>
+ #endif /* HPE_mingw_BUILD */
+ #include <unistd.h>    /* Definitions of uid_t and gid_t */
++/* Modern MinGW-w64 no longer defines uid_t/gid_t anywhere */
++#if defined(__MINGW32__) && !defined(__UID_T_TYPE_DEFINED)
++#define __UID_T_TYPE_DEFINED
++typedef unsigned int uid_t;
++typedef unsigned int gid_t;
++#endif
+ #include <basetyps.h>  /* Used for UUID related functions */
+ #include <winsock2.h>
+ #include <windows.h>
+@@ -267,7 +273,7 @@ struct _stat_libltfs
+ {
+ 	_dev_t  st_dev;         /* Equivalent to drive number 0=A 1=B ... */
+ 	_ino_t  st_ino;         /* Always zero ? */
+-	_mode_t st_mode;        /* See above constants */
++	unsigned short st_mode; /* was _mode_t, gone from modern MinGW-w64 */
+ 	short   st_nlink;       /* Number of links. */
+ 	short   st_uid;         /* User: Maybe significant on NT ? */
+ 	short   st_gid;         /* Group: Ditto */
+diff --git a/ltfs/src/libltfs/arch/win/winlog.c b/ltfs/src/libltfs/arch/win/winlog.c
+index c1857df..a069cb9 100644
+--- a/ltfs/src/libltfs/arch/win/winlog.c
++++ b/ltfs/src/libltfs/arch/win/winlog.c
+@@ -164,7 +164,7 @@ void vsyslog(int priority, const char *format, va_list ap)
+             NULL,       //User SID
+             1,          //String Num
+             0,          //DataSize
+-            &msg,       //StringArray
++            (const CHAR **)&msg, //StringArray (cast: ReportEvent wants LPCSTR*)
+             NULL);      //Data
+     DeregisterEventSource(h);
+ #endif
+diff --git a/ltfs/src/libltfs/ltfs_fuse_version.h b/ltfs/src/libltfs/ltfs_fuse_version.h
+index 2ce431d..22997e1 100644
+--- a/ltfs/src/libltfs/ltfs_fuse_version.h
++++ b/ltfs/src/libltfs/ltfs_fuse_version.h
+@@ -51,4 +51,11 @@
+ 
+ #define FUSE_USE_VERSION 26
+ 
++/* WinFsp build: use the extended stat (fuse_stat_ex) so handlers can report
++ * Windows file attributes (UF_ARCHIVE etc.) through st_flags. Must be defined
++ * before <fuse.h> in every translation unit, which this header precedes. */
++#ifdef _WIN32
++#define FSP_FUSE_USE_STAT_EX 1
++#endif
++
+ #endif /* __ltfs_fuse_version_h__ */
+diff --git a/ltfs/src/libltfs/ltfs_thread.h b/ltfs/src/libltfs/ltfs_thread.h
+index c395b4d..9a8b4ba 100644
+--- a/ltfs/src/libltfs/ltfs_thread.h
++++ b/ltfs/src/libltfs/ltfs_thread.h
+@@ -198,9 +198,11 @@ static inline ltfs_thread_t ltfs_thread_self(void)
+ #ifdef __APPLE__
+ extern uint32_t ltfs_get_thread_id(void);
+ #elif defined(HPE_mingw_BUILD)
+-static inline void* ltfs_get_thread_id(void)
++static inline uint32_t ltfs_get_thread_id(void)
+ {
+-	return (pthread_self().p);
++	/* winpthreads' pthread_t is an integer, not the old pthreads-win32
++	 * struct with a .p member; the id is only used as an opaque token. */
++	return (uint32_t)(uintptr_t)pthread_self();
+ }
+ #else
+ static inline uint32_t ltfs_get_thread_id(void)
+diff --git a/ltfs/src/libltfs/tape.c b/ltfs/src/libltfs/tape.c
+index 46bf81e..75a6060 100644
+--- a/ltfs/src/libltfs/tape.c
++++ b/ltfs/src/libltfs/tape.c
+@@ -87,12 +87,11 @@
+ #include <ICU/unicode/utf8.h>
+ #include <ICU/unicode/ustring.h>
+ #else
+-/* Added to fix Windows compilation */
+-#ifndef HPE_mingw_BUILD
++/* Modern ICU on MinGW needs these too (the old HPE_mingw_BUILD exclusion
++ * predates MSYS2's ICU packages) */
+ #include <unicode/utf8.h>
+ #include <unicode/ustring.h>
+ #endif
+-#endif
+ 
+ #include "ltfs_error.h"
+ #include "tape.h"
+diff --git a/ltfs/src/ltfs_fuse.c b/ltfs/src/ltfs_fuse.c
+index 4151ffe..9a918a4 100644
+--- a/ltfs/src/ltfs_fuse.c
++++ b/ltfs/src/ltfs_fuse.c
+@@ -258,9 +258,19 @@ const char *_dentry_name(const char *path, struct file_info *fi)
+ 		return "(unnamed)";
+ }
+ 
+-static void _ltfs_fuse_attr_to_stat(struct stat *stbuf, struct dentry_attr *attr,
++static void _ltfs_fuse_attr_to_stat(struct fuse_stat *stbuf, struct dentry_attr *attr,
+ 	struct ltfs_fuse_data *priv)
+ {
++	memset(stbuf, 0, sizeof(*stbuf));
++#if defined(_WIN32) && defined(FSP_FUSE_USE_STAT_EX)
++	/* Report tape files with the Archive attribute (visual identity for
++	 * archival media; also mirrors the read-only flag as an attribute). */
++	if (! attr->isdir) {
++		stbuf->st_flags = UF_ARCHIVE;
++		if (attr->readonly)
++			stbuf->st_flags |= UF_READONLY;
++	}
++#endif
+ 	stbuf->st_dev = LTFS_SUPER_MAGIC;
+ 	stbuf->st_ino = attr->uid;
+ 	if (attr->isslink) {
+@@ -292,13 +302,23 @@ static void _ltfs_fuse_attr_to_stat(struct stat *stbuf, struct dentry_attr *attr
+ 	stbuf->st_ctimespec = timespec_from_ltfs_timespec(&attr->change_time);
+ 	stbuf->st_birthtimespec = timespec_from_ltfs_timespec(&attr->create_time);
+ #else
+-	stbuf->st_atim = timespec_from_ltfs_timespec(&attr->access_time);
+-	stbuf->st_mtim = timespec_from_ltfs_timespec(&attr->modify_time);
+-	stbuf->st_ctim = timespec_from_ltfs_timespec(&attr->change_time);
++	/* Field-wise conversion: WinFsp's fuse_timespec has a 64-bit tv_nsec,
++	 * the platform timespec may not — the layouts are not cast-compatible. */
++	stbuf->st_atim.tv_sec  = attr->access_time.tv_sec;
++	stbuf->st_atim.tv_nsec = attr->access_time.tv_nsec;
++	stbuf->st_mtim.tv_sec  = attr->modify_time.tv_sec;
++	stbuf->st_mtim.tv_nsec = attr->modify_time.tv_nsec;
++	stbuf->st_ctim.tv_sec  = attr->change_time.tv_sec;
++	stbuf->st_ctim.tv_nsec = attr->change_time.tv_nsec;
++#if defined(_WIN32)
++	/* WinFsp reports st_birthtim as the Windows creation time */
++	stbuf->st_birthtim.tv_sec  = attr->create_time.tv_sec;
++	stbuf->st_birthtim.tv_nsec = attr->create_time.tv_nsec;
++#endif
+ #endif
+ }
+ 
+-int ltfs_fuse_fgetattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
++int ltfs_fuse_fgetattr(const char *path, struct fuse_stat *stbuf, struct fuse_file_info *fi)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	struct ltfs_file_handle *file = FILEHANDLE_TO_STRUCT(fi->fh);
+@@ -324,7 +344,7 @@ int ltfs_fuse_fgetattr(const char *path, struct stat *stbuf, struct fuse_file_in
+ 	return errormap_fuse_error(ret);
+ }
+ 
+-int ltfs_fuse_getattr(const char *path, struct stat *stbuf)
++int ltfs_fuse_getattr(const char *path, struct fuse_stat *stbuf)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	struct dentry_attr attr;
+@@ -359,7 +379,7 @@ int ltfs_fuse_access(const char *path, int mode)
+ 	return 0;
+ }
+ 
+-int ltfs_fuse_statfs(const char *path, struct statvfs *buf)
++int ltfs_fuse_statfs(const char *path, struct fuse_statvfs *buf)
+ {
+ 	/*
+ 	 * OSR
+@@ -369,7 +389,7 @@ int ltfs_fuse_statfs(const char *path, struct statvfs *buf)
+ #if !defined(mingw_PLATFORM) || defined(HPE_mingw_BUILD)
+ 	int ret = 0;
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+-	struct statvfs *stats = &priv->fs_stats;
++	struct fuse_statvfs *stats = &priv->fs_stats;
+ 	struct device_capacity blockstat;
+ 
+ #if 0
+@@ -392,7 +412,7 @@ int ltfs_fuse_statfs(const char *path, struct statvfs *buf)
+ 	stats->f_files = ltfs_get_file_count(priv->data);
+ 
+ 	stats->f_ffree = UINT32_MAX - stats->f_files;   /* Assuming file count fits in 32 bits. */
+-	memcpy(buf, stats, sizeof(struct statvfs));
++	*buf = *stats;
+ 
+ #ifdef __APPLE__
+ 	/* With MacFUSE, we use an f_frsize not equal to the file system block size.
+@@ -703,7 +723,7 @@ int ltfs_fuse_flush(const char *path, struct fuse_file_info *fi)
+ 	return errormap_fuse_error(ret);
+ }
+ 
+-int ltfs_fuse_utimens(const char *path, const struct timespec ts[2])
++int ltfs_fuse_utimens(const char *path, const struct fuse_timespec ts[2])
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	struct ltfs_timespec tsTmp[2];
+@@ -714,8 +734,11 @@ int ltfs_fuse_utimens(const char *path, const struct timespec ts[2])
+ 	ltfs_request_trace(FUSE_REQ_ENTER(REQ_UTIMENS), 0, 0);
+ #endif /* 0 */
+ 
+-	tsTmp[0] = ltfs_timespec_from_timespec(&ts[0]);
+-	tsTmp[1] = ltfs_timespec_from_timespec(&ts[1]);
++	/* ts may be WinFsp's fuse_timespec (64-bit tv_nsec); convert field-wise. */
++	tsTmp[0].tv_sec  = ts[0].tv_sec;
++	tsTmp[0].tv_nsec = (long)ts[0].tv_nsec;
++	tsTmp[1].tv_sec  = ts[1].tv_sec;
++	tsTmp[1].tv_nsec = (long)ts[1].tv_nsec;
+ 
+ #ifdef HPE_mingw_BUILD
+ 	if (tsTmp[0].tv_sec == 0 && tsTmp[0].tv_nsec == 0
+@@ -739,7 +762,7 @@ int ltfs_fuse_utimens(const char *path, const struct timespec ts[2])
+  * Change the mode of a file or directory. Since LTFS does not support full Unix permissions,
+  * this function just sets or clears the read-only flag.
+  */
+-int ltfs_fuse_chmod(const char *path, mode_t mode)
++int ltfs_fuse_chmod(const char *path, fuse_mode_t mode)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	ltfs_file_id id;
+@@ -764,7 +787,7 @@ int ltfs_fuse_chmod(const char *path, mode_t mode)
+  * Set ownership of a file or directory. Succeeds, but has no effect: user/group are
+  * controlled by mount-time options uid and gid.
+  */
+-int ltfs_fuse_chown(const char *path, uid_t user, gid_t group)
++int ltfs_fuse_chown(const char *path, fuse_uid_t user, fuse_gid_t group)
+ {
+ #if 0
+ 	ltfs_request_trace(FUSE_REQ_ENTER(REQ_CHOWN), ((uint64_t)user << 32) + group, 0);
+@@ -773,7 +796,7 @@ int ltfs_fuse_chown(const char *path, uid_t user, gid_t group)
+ 	return 0;
+ }
+ 
+-int ltfs_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
++int ltfs_fuse_create(const char *path, fuse_mode_t mode, struct fuse_file_info *fi)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	struct ltfs_file_handle *file;
+@@ -856,7 +879,7 @@ int ltfs_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
+ 	return errormap_fuse_error(0);
+ }
+ 
+-int ltfs_fuse_mkdir(const char *path, mode_t mode)
++int ltfs_fuse_mkdir(const char *path, fuse_mode_t mode)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	void *dentry_handle;
+@@ -884,7 +907,7 @@ int ltfs_fuse_mkdir(const char *path, mode_t mode)
+ 	return errormap_fuse_error(ret);
+ }
+ 
+-int ltfs_fuse_truncate(const char *path, off_t length)
++int ltfs_fuse_truncate(const char *path, fuse_off_t length)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	ltfs_file_id id;
+@@ -905,7 +928,7 @@ int ltfs_fuse_truncate(const char *path, off_t length)
+ 	return errormap_fuse_error(ret);
+ }
+ 
+-int ltfs_fuse_ftruncate(const char *path, off_t length, struct fuse_file_info *fi)
++int ltfs_fuse_ftruncate(const char *path, fuse_off_t length, struct fuse_file_info *fi)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	struct ltfs_file_handle *file = FILEHANDLE_TO_STRUCT(fi->fh);
+@@ -1027,7 +1050,7 @@ int _ltfs_fuse_filldir(void *buf, const char *name, void *priv)
+ }
+ 
+ int ltfs_fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+-	off_t offset, struct fuse_file_info *fi)
++	fuse_off_t offset, struct fuse_file_info *fi)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	struct ltfs_file_handle *file = FILEHANDLE_TO_STRUCT(fi->fh);
+@@ -1061,7 +1084,7 @@ int ltfs_fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+ 	return errormap_fuse_error(ret);
+ }
+ 
+-int ltfs_fuse_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
++int ltfs_fuse_write(const char *path, const char *buf, size_t size, fuse_off_t offset, struct fuse_file_info *fi)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	struct ltfs_file_handle *file = FILEHANDLE_TO_STRUCT(fi->fh);
+@@ -1102,7 +1125,7 @@ int ltfs_fuse_write(const char *path, const char *buf, size_t size, off_t offset
+ 	}
+ }
+ 
+-int ltfs_fuse_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
++int ltfs_fuse_read(const char *path, char *buf, size_t size, fuse_off_t offset, struct fuse_file_info *fi)
+ {
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+ 	struct ltfs_file_handle *file = FILEHANDLE_TO_STRUCT(fi->fh);
+@@ -1267,7 +1290,7 @@ void * ltfs_fuse_mount(struct fuse_conn_info *conn)
+ {
+ 	int						ret = 0;
+ 	struct ltfs_fuse_data *priv = fuse_get_context()->private_data;
+-	struct statvfs *stats = &priv->fs_stats;
++	struct fuse_statvfs *stats = &priv->fs_stats;
+ #ifdef HPE_mingw_BUILD
+ 	int						iter = 0;
+ 	char					*index_rules_utf8 = NULL;
+@@ -1277,6 +1300,12 @@ void * ltfs_fuse_mount(struct fuse_conn_info *conn)
+ 	ltfs_request_trace(FUSE_REQ_ENTER(REQ_MOUNT), 0, 0);
+ #endif /* 0 */
+ 
++#if defined(FSP_FUSE_CAP_STAT_EX)
++	/* WinFsp: negotiate the extended stat so st_flags (Windows file
++	 * attributes such as Archive) reach the filesystem layer. */
++	conn->want |= conn->capable & FSP_FUSE_CAP_STAT_EX;
++#endif
++
+ #ifdef HPE_mingw_BUILD
+ 
+ 	/* Allocate the LTFS volume structure */
+@@ -1284,7 +1313,7 @@ void * ltfs_fuse_mount(struct fuse_conn_info *conn)
+ 		if (ltfs_volume_alloc("ltfs", &priv->data) < 0) {
+ 			/* Could not allocate LTFS volume structure */
+ 			ltfsmsg(LTFS_ERR, "14011E");
+-			return 1;
++			return (void *)1;
+ 		}
+ 		ltfs_use_atime(priv->atime, priv->data);
+ 	}
+@@ -1757,7 +1786,9 @@ struct fuse_operations ltfs_ops = {
+ 	.removexattr = ltfs_fuse_removexattr,
+ 	.symlink     = ltfs_fuse_symlink,
+ 	.readlink    = ltfs_fuse_readlink,
+-#if FUSE_VERSION >= 28
++#if FUSE_VERSION >= 28 && !defined(FSP_FUSE_API)
++	/* WinFsp's fuse_operations has no flag bitfields (it reports 2.8 but
++	 * ignores nullpath_ok; its FUSE layer never passes NULL paths). */
+ 	.flag_nullpath_ok = 1,
+ #endif
+ };
+diff --git a/ltfs/src/ltfs_fuse.h b/ltfs/src/ltfs_fuse.h
+index f6e5fb0..c4a2120 100644
+--- a/ltfs/src/ltfs_fuse.h
++++ b/ltfs/src/ltfs_fuse.h
+@@ -67,6 +67,24 @@ extern "C" {
+ 
+ #include "libltfs/ltfs_fuse_version.h"
+ #include <fuse.h>
++
++/*
++ * WinFsp (native Windows) defines its own fuse_stat/fuse_statvfs/fuse_timespec
++ * and fuse_off_t/fuse_mode_t/fuse_uid_t/fuse_gid_t ABI types in place of the
++ * POSIX types used by libfuse. The FUSE handler signatures below use the
++ * fuse_* names everywhere; on libfuse platforms (and Cygwin, where WinFsp
++ * already aliases them) map them back onto the native types.
++ */
++#if !defined(_WIN32) && !defined(__CYGWIN__)
++#define fuse_stat     stat
++#define fuse_statvfs  statvfs
++#define fuse_timespec timespec
++typedef off_t  fuse_off_t;
++typedef mode_t fuse_mode_t;
++typedef uid_t  fuse_uid_t;
++typedef gid_t  fuse_gid_t;
++#endif
++
+ #include "libltfs/ltfs.h"
+ #include "libltfs/plugin.h"
+ #include "libltfs/uthash.h"
+@@ -74,7 +92,7 @@ extern "C" {
+ struct ltfs_fuse_data {
+ 	bool first_parsing_pass;       /**< Just looking for a config file? If so, don't print help */
+ 
+-	struct statvfs fs_stats;       /**< Filesystem stats */
++	struct fuse_statvfs fs_stats;  /**< Filesystem stats (WinFsp ABI type on Windows) */
+ 
+ 	pid_t pid_orig;                /**< Process ID of LTFS at launched (before background exec) */
+ 
+diff --git a/ltfs/src/tape_drivers/generic/file/filedebug_tc.c b/ltfs/src/tape_drivers/generic/file/filedebug_tc.c
+index 3979890..08eab52 100755
+--- a/ltfs/src/tape_drivers/generic/file/filedebug_tc.c
++++ b/ltfs/src/tape_drivers/generic/file/filedebug_tc.c
+@@ -74,6 +74,7 @@
+ #include "libltfs/ltfslogging.h"
+ #include "libltfs/ltfs_endian.h"
+ #include "libltfs/tape_ops.h"
++#include "libltfs/ltfs.h"        /* mam_lockval, used by the tape_ops signatures */
+ #include "libltfs/ltfs_error.h"
+ 
+ volatile char *copyright = LTFS_COPYRIGHT_0"\n"LTFS_COPYRIGHT_1"\n"LTFS_COPYRIGHT_2"\n" \
+@@ -152,6 +153,8 @@ int _filedebug_space_fm(struct filedebug_data *state, uint64_t count, bool back)
+ int _filedebug_space_rec(struct filedebug_data *state, uint64_t count, bool back);
+ int _get_wp(struct filedebug_data *state, uint64_t *wp);
+ int _set_wp(struct filedebug_data *state, uint64_t wp);
++int filedebug_update_mam_attr(void *device, TC_FORMAT_TYPE format,
++	const char *vol_name, unsigned int attribute_id, const char *barcode_name, mam_lockval lockbit);
+ 
+ /* Command-line options recognized by this module */
+ #define FILEDEBUG_OPT(templ,offset,value) { templ, offsetof(struct filedebug_data, offset), value }
+@@ -184,7 +187,7 @@ int filedebug_parse_opts(void *vstate, void *opt_args)
+ 	return 0;
+ }
+ 
+-void filedebug_help_message(void)
++void filedebug_help_message(const char *progname)
+ {
+ 	ltfsresult("12272I", filedebug_default_device);
+ }
+@@ -975,7 +978,7 @@ int filedebug_setcap(void *vstate, uint16_t proportion)
+ 	return DEVICE_GOOD;
+ }
+ 
+-int filedebug_format(void *vstate, TC_FORMAT_TYPE format)
++int filedebug_format(void *vstate, TC_FORMAT_TYPE format, const char *vol_name, const char *barcode_name, const char *vol_mam_uuid)
+ {
+ 	struct filedebug_data *state = (struct filedebug_data *)vstate;
+ 	struct tc_position pos;
+@@ -1740,7 +1743,16 @@ int filedebug_get_worm_status(void *device, bool *is_worm)
+ 	return DEVICE_GOOD;
+ }
+ 
++/* LTFS 2.4/3.4.2 added a combined load/unload op; delegate to the existing
++ * load/unload paths (the file emulator ignores the "hold" flag). */
++int filedebug_loadunload(void *device, struct tc_position *pos, bool load, bool hold)
++{
++	(void)hold;
++	return load ? filedebug_load(device, pos) : filedebug_unload(device, pos);
++}
++
+ struct tape_ops filedebug_handler = {
++	.loadunload             = filedebug_loadunload,
+ 	.open                   = filedebug_open,
+ 	.reopen                 = filedebug_reopen,
+ 	.close                  = filedebug_close,
+@@ -1791,23 +1803,28 @@ struct tape_ops filedebug_handler = {
+ 	.takedump_drive         = filedebug_takedump_drive,
+ 	.is_mountable           = filedebug_is_mountable,
+ 	.get_worm_status        = filedebug_get_worm_status,
++	.update_mam_attr        = filedebug_update_mam_attr,
+ };
+ 
++int filedebug_update_mam_attr(void *device, TC_FORMAT_TYPE format,
++	const char *vol_name, unsigned int attribute_id, const char *barcode_name, mam_lockval lockbit)
++{
++	/* MAM (cartridge memory) attributes don't exist in the file emulator;
++	 * succeed as a no-op so format/mount flows continue. */
++	return DEVICE_GOOD;
++}
++
+ struct tape_ops *tape_dev_get_ops(void)
+ {
+ 	return &filedebug_handler;
+ }
+ 
+-#ifndef mingw_PLATFORM
+ extern char driver_generic_file_dat[];
+-#endif
+ 
+ const char *tape_dev_get_message_bundle_name(void **message_data)
+ {
+-#ifndef mingw_PLATFORM
++	/* The message bundle is built on Windows too now (build.sh filedebug);
++	 * the old mingw_PLATFORM NULL path made plugin load fail outright. */
+ 	*message_data = driver_generic_file_dat;
+-#else
+-	*message_data = NULL;
+-#endif
+ 	return "driver_generic_file";
+ }
+diff --git a/ltfs/src/tape_drivers/windows/ltotape/Makefile.am b/ltfs/src/tape_drivers/windows/ltotape/Makefile.am
+index 168091c..d5d78d3 100644
+--- a/ltfs/src/tape_drivers/windows/ltotape/Makefile.am
++++ b/ltfs/src/tape_drivers/windows/ltotape/Makefile.am
+@@ -30,7 +30,7 @@ AM_LIBTOOLFLAGS = --tag=disable-static
+ 
+ libdriver_ltotape_win_la_SOURCES = ltotape.c  ltotape_diag.c  ltotape_platform.c
+ libdriver_ltotape_win_la_DEPENDENCIES = $(top_srcdir)/messages/libdriver_ltotape.a
+-libdriver_ltotape_win_la_LIBADD = -L$(abs_top_srcdir)/messages -ldriver_ltotape ../../../libltfs/libltfs.la -lfuse4win
++libdriver_ltotape_win_la_LIBADD = -L$(abs_top_srcdir)/messages -ldriver_ltotape ../../../libltfs/libltfs.la $(FUSE_MODULE_LIBS)
+ libdriver_ltotape_win_la_CPPFLAGS = -I$(top_srcdir)/src @AM_CPPFLAGS@
+ libdriver_ltotape_win_la_LDFLAGS = -avoid-version -no-undefined
+ 
+diff --git a/ltfs/src/tape_drivers/windows/ltotape/ltotape_platform.c b/ltfs/src/tape_drivers/windows/ltotape/ltotape_platform.c
+index 14a2bf6..36ebf9b 100644
+--- a/ltfs/src/tape_drivers/windows/ltotape/ltotape_platform.c
++++ b/ltfs/src/tape_drivers/windows/ltotape/ltotape_platform.c
+@@ -58,7 +58,7 @@
+ /*
+  * Include Non-standard FUSE APIs for device communication
+  */
+-#include <FUSE4Win_nonstd.h>
++#include "winfsp_compat.h" /* was: FUSE4Win_nonstd.h — see PORTING_PLAN.md */
+ 
+ 
+ /*
+diff --git a/ltfs/src/tape_drivers/windows/ltotape/winfsp_compat.h b/ltfs/src/tape_drivers/windows/ltotape/winfsp_compat.h
+new file mode 100644
+index 0000000..c454946
+--- /dev/null
++++ b/ltfs/src/tape_drivers/windows/ltotape/winfsp_compat.h
+@@ -0,0 +1,70 @@
++/*
++ * winfsp_compat.h — WinFsp adaptation shim for the LTFS Windows build.
++ *
++ * Include this INSTEAD OF <fuse.h> in FUSE-facing translation units
++ * (src/ltfs_fuse.c, src/main.c, the kmi/iosched/tape-backend plugins that use
++ * fuse_opt, and src/tape_drivers/windows/ltotape/ltotape_platform.c in place
++ * of <FUSE4Win_nonstd.h>).
++ *
++ * Compile with: -I<winfsp>/inc/fuse  (and link winfsp-x64.dll import lib)
++ * Status: starting artifact for PORTING_PLAN.md step 1 — not yet compiled
++ * against the tree; expect to iterate during build bring-up.
++ */
++#ifndef LTFS_WINFSP_COMPAT_H
++#define LTFS_WINFSP_COMPAT_H
++
++#include <fuse.h> /* WinFsp FUSE 2.8-compatible API (winfsp/inc/fuse) */
++
++/*
++ * FUSE4Win proprietary extension stubs (formerly FUSE4Win_nonstd.h).
++ *
++ * Under FUSE4Win/UMFSDK the kernel driver mounted on the tape device object,
++ * so a mounted filesystem instance lost direct device access and had to
++ * tunnel SCSI through the FUSE layer. A WinFsp mount is an independent
++ * virtual volume: the LTFS process keeps its own \\.\TAPEn handle (opened in
++ * ltotape_open with FSCTL_LOCK_VOLUME for exclusivity), so the direct
++ * DeviceIoControl path is always the right one.
++ *
++ * fuse_get_media_device() returning NULL steers every existing call site
++ * (ltotape_platform.c:368, and the fd==NULL branch at :199) onto that path.
++ */
++static inline void *fuse_get_media_device(void)
++{
++	return NULL;
++}
++
++static inline int fuse_media_ioctl(unsigned long ctlcode,
++	void *inbuf, unsigned long inlen, void *outbuf, unsigned long outlen)
++{
++	(void)ctlcode; (void)inbuf; (void)inlen; (void)outbuf; (void)outlen;
++	/* Unreachable: ltotape_open always opens a real device handle, so the
++	 * fd==NULL branch that calls this can never be taken. Fail loudly if
++	 * something does reach it (0 == FALSE for the BOOL-style caller). */
++	return 0;
++}
++
++/*
++ * Gap G3 (PORTING_PLAN.md): WinFsp's fuse_timespec has int64 tv_nsec on x64;
++ * the MinGW/LTFS timespec has 32-bit tv_nsec. Field-by-field conversion only —
++ * the layouts are NOT compatible for memcpy/cast.
++ */
++static inline struct fuse_timespec
++fuse_timespec_from_timespec_fields(long long sec, long nsec)
++{
++	struct fuse_timespec ts;
++	ts.tv_sec = sec;
++	ts.tv_nsec = nsec;
++	return ts;
++}
++
++/*
++ * Gap G5 sanity: the FUSE callback signatures exchange 64-bit offsets.
++ * win_util.h already forces _FILE_OFFSET_BITS=64; make sure it held.
++ */
++#ifdef __cplusplus
++static_assert(sizeof(fuse_off_t) == 8, "fuse_off_t must be 64-bit");
++#else
++typedef char ltfs_winfsp_off_t_must_be_64bit[(sizeof(fuse_off_t) == 8) ? 1 : -1];
++#endif
++
++#endif /* LTFS_WINFSP_COMPAT_H */
+diff --git a/ltfs/src/utils/Makefile.am b/ltfs/src/utils/Makefile.am
+index bf88692..58e6a2e 100755
+--- a/ltfs/src/utils/Makefile.am
++++ b/ltfs/src/utils/Makefile.am
+@@ -31,22 +31,46 @@
+ #
+ #  ZZ_Copyright_END
+ #
++###############################################################################
++#
++#  Copyright (C) 2012 OSR Open Systems Resources, Inc.
++#
++###############################################################################
++
+ 
+ bin_PROGRAMS = mkltfs ltfsck unltfs
+ 
+ noinst_HEADERS =
+ 
+ mkltfs_SOURCES = mkltfs.c
+-mkltfs_DEPENDENCIES = ../libltfs/libltfs.la ../../messages/bin_mkltfs_dat.o
+-mkltfs_LDADD = ../libltfs/libltfs.la ../../messages/bin_mkltfs_dat.o
++#
++# OSR/HP_mingw_BUILD
++# 
++# In our MinGW environment, we dynamically link to the package 
++# data. 
++#  
++mkltfs_DEPENDENCIES = ../libltfs/libltfs.la ../../messages/libbin_mkltfs.a
++mkltfs_LDADD = -L../../messages ../libltfs/libltfs.la -lbin_mkltfs -lbin_libltfs 
+ mkltfs_CPPFLAGS = @AM_CPPFLAGS@ -I ..
+ 
+ unltfs_SOURCES = unltfs.c
+-unltfs_DEPENDENCIES = ../libltfs/libltfs.la ../../messages/bin_mkltfs_dat.o
+-unltfs_LDADD = ../libltfs/libltfs.la ../../messages/bin_mkltfs_dat.o
++#
++# OSR/HP_mingw_BUILD
++# 
++# In our MinGW environment, we dynamically link to the package 
++# data. 
++#  
++unltfs_DEPENDENCIES = ../libltfs/libltfs.la ../../messages/libbin_mkltfs.a
++unltfs_LDADD = -L../../messages ../libltfs/libltfs.la -lbin_mkltfs -lbin_libltfs 
+ unltfs_CPPFLAGS = @AM_CPPFLAGS@ -I ..
+ 
+ ltfsck_SOURCES = ltfsck.c
+-ltfsck_DEPENDENCIES = ../libltfs/libltfs.la ../../messages/bin_ltfsck_dat.o
+-ltfsck_LDADD = ../libltfs/libltfs.la ../../messages/bin_ltfsck_dat.o
++#
++# OSR/HP_mingw_BUILD
++# 
++# In our MinGW environment, we dynamically link to the package 
++# data. 
++#  
++ltfsck_DEPENDENCIES = ../libltfs/libltfs.la ../../messages/libbin_ltfsck.a
++ltfsck_LDADD = -L../../messages ../libltfs/libltfs.la -lbin_ltfsck -lbin_libltfs 
+ ltfsck_CPPFLAGS = @AM_CPPFLAGS@ -I ..

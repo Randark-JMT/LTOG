@@ -1,0 +1,5 @@
+Name: uuid
+Description: Windows native UUID (UuidCreate via rpcrt4); LTFS win_util.c uses it directly
+Version: 2.41
+Cflags:
+Libs: -lrpcrt4

@@ -1,0 +1,8 @@
+prefix=${pcfiledir}/../build/wfsp
+
+Name: fuse
+Description: WinFsp FUSE 2.8 compatible API (staged by scripts/setup.sh)
+Version: 2.8.0
+URL: https://winfsp.dev
+Cflags: -I${prefix}/inc/fuse
+Libs: -L${prefix}/lib -lwinfsp-x64

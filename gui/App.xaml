@@ -1,0 +1,17 @@
+<Application
+    x:Class="LTOG.Gui.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+            <!-- flat page surface: no chrome margin, border or corner radius
+                 on the NavigationView content area -->
+            <Thickness x:Key="NavigationViewContentMargin">0</Thickness>
+            <Thickness x:Key="NavigationViewContentGridBorderThickness">0</Thickness>
+            <CornerRadius x:Key="NavigationViewContentGridCornerRadius">0</CornerRadius>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

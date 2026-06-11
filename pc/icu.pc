@@ -1,0 +1,6 @@
+Name: icu
+Description: Compat shim - modern ICU ships icu-uc/icu-i18n instead of 'icu'
+Version: 78.0
+Requires: icu-uc icu-i18n
+Cflags:
+Libs:
