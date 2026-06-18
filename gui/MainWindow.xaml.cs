@@ -22,6 +22,7 @@ public sealed partial class MainWindow : Window
     private readonly Settings _settings = Settings.Load();
     private readonly MountManager _mounts = new();
     private List<TapeDrive> _drives = new();
+    private readonly List<Window> _childWindows = new();
     private bool _loadingUi;
     private bool _polling;
     private bool _utilityRunning;
@@ -948,7 +949,17 @@ public sealed partial class MainWindow : Window
         if ((sender as FrameworkElement)?.DataContext is not SchemaItem item) return;
         try
         {
-            Process.Start(new ProcessStartInfo(item.Path) { UseShellExecute = true });
+            if (!File.Exists(item.Path))
+            {
+                Activity.Note($"open snapshot failed: file no longer exists: {item.Path}", isError: true);
+                RefreshSchemas();
+                return;
+            }
+
+            var viewer = new SchemaViewerWindow(item.Path);
+            _childWindows.Add(viewer);
+            viewer.Closed += (_, _) => _childWindows.Remove(viewer);
+            viewer.Activate();
         }
         catch (Exception ex) { Activity.Note($"open snapshot failed: {ex.Message}", isError: true); }
     }
