@@ -22,6 +22,12 @@ public sealed class TapeMonitor(IActivityLog log)
 
     public IReadOnlyList<string> FreeLetters { get; private set; } = [];
 
+    /// <summary>
+    /// The UI is on screen. A mounted drive's 30 s MAM refresh only fires while it is:
+    /// each one is ~76 READ ATTRIBUTEs that starve the writer for ~10 s.
+    /// </summary>
+    public bool Visible { get; set; } = true;
+
     // ---- inputs --------------------------------------------------------------
 
     /// <summary>
@@ -174,7 +180,8 @@ public sealed class TapeMonitor(IActivityLog log)
             catch { usage = null; }
             Publish(d, d.State with { Usage = usage });
 
-            if (DateTime.UtcNow - d.MamReadAt < TimeSpan.FromSeconds(30)) return;
+            // due but hidden: stays due, so it fires on the first pass once visible again
+            if (!Visible || DateTime.UtcNow - d.MamReadAt < TimeSpan.FromSeconds(30)) return;
             d.MamReadAt = DateTime.UtcNow;
             try
             {

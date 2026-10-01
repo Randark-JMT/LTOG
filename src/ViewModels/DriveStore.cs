@@ -37,6 +37,9 @@ public sealed class DriveStore(Settings settings, IActivityLog log, bool envOk)
         _monitor.Start();
     }
 
+    /// <summary>Whether the window is on screen (see <see cref="TapeMonitor.Visible"/>).</summary>
+    public bool Visible { set => _monitor.Visible = value; }
+
     private DriveViewModel? Find(string device) => Drives.FirstOrDefault(s => s.Drive.Device == device);
 
     private void UpdateGlobalEnabled()

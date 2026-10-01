@@ -30,6 +30,9 @@ public sealed partial class MainWindow : Window
         if (File.Exists(ico))
             AppWindow.SetIcon(ico);
         Closed += (_, _) => SaveWindowBounds();
+        AppWindow.Changed += (w, _) => App.DriveStore.Visible = w.IsVisible
+            && w.Presenter is not Microsoft.UI.Windowing.OverlappedPresenter
+                { State: Microsoft.UI.Windowing.OverlappedPresenterState.Minimized };
 
         if (!App.EnvOk)
         {
